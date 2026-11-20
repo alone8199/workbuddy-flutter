@@ -6,8 +6,17 @@ import 'package:workbuddy/auth/auth_repository.dart';
 import 'package:workbuddy/auth/login_events.dart';
 import 'package:workbuddy/auth/login_methods/device_code_login.dart';
 import 'package:workbuddy/auth/login_state_machine.dart';
+import 'package:workbuddy/auth/post_login_checker.dart';
 import 'package:workbuddy/models/auth.dart';
+import 'package:workbuddy/models/phone_binding.dart';
 import 'package:workbuddy/network/client.dart';
+
+/// 测试用放行校验器：扫码拿到 token 即视为已绑定，专注二维码流程本身。
+class _AllowChecker extends PostLoginChecker {
+  @override
+  Future<PostLoginOutcome> check(AuthTokens tokens) async =>
+      PostLoginAllowed(tokens, const PhoneBinding(PhoneBindingStatus.bound));
+}
 
 /// 按路径分发的 fake adapter：
 ///  - auth/state → 200 + {code:0, data:{state, authUrl}}（实测公开端点行为）
@@ -50,7 +59,8 @@ void main() {
         onAuthExpired: () async {},
         dioInstance: dio);
     final repo = AuthRepository(net);
-    final controller = DeviceCodeLoginController(repo: repo);
+    final controller = DeviceCodeLoginController(
+        repo: repo, postLoginChecker: _AllowChecker());
 
     controller.dispatch(LoginStart(LoginMethod.deviceCode));
     await Future<void>.delayed(const Duration(milliseconds: 300));

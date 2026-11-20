@@ -1,4 +1,5 @@
 import '../models/auth.dart';
+import '../models/phone_binding.dart';
 import 'login_state_machine.dart';
 
 /// 登录模块事件/副作用模型（状态管理分离：State / Event / Effect）。
@@ -69,6 +70,15 @@ class EffectStartCountdown extends LoginEffect {
 }
 
 class EffectRefreshQr extends LoginEffect {}
+
+/// 扫码已成功但账号未绑定手机号：拦截进入，引导去网页绑定后重新扫码。
+/// [bindUrl] 为网页绑定入口，[message] 为提示文案。
+class EffectBindPhoneRequired extends LoginEffect {
+  final String bindUrl;
+  final String message;
+  final PhoneBindingStatus bindingStatus;
+  EffectBindPhoneRequired(this.bindUrl, this.message, this.bindingStatus);
+}
 
 /// 倒计时/轮询等派生 UI 状态（与 LoginPhase 正交）。
 class LoginUiState {

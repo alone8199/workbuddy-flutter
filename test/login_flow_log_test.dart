@@ -8,8 +8,17 @@ import 'package:workbuddy/auth/login_events.dart';
 import 'package:workbuddy/auth/login_methods/device_code_login.dart';
 import 'package:workbuddy/auth/login_methods/passwordless_login.dart';
 import 'package:workbuddy/auth/login_methods/webview_oauth_login.dart';
+import 'package:workbuddy/auth/post_login_checker.dart';
 import 'package:workbuddy/models/auth.dart';
+import 'package:workbuddy/models/phone_binding.dart';
 import 'package:workbuddy/network/client.dart';
+
+/// 测试用放行校验器：让扫码流程能走到 EffectNavigateHome。
+class _AllowChecker extends PostLoginChecker {
+  @override
+  Future<PostLoginOutcome> check(AuthTokens tokens) async =>
+      PostLoginAllowed(tokens, const PhoneBinding(PhoneBindingStatus.bound));
+}
 
 /// mock 驱动：为每种登录方式跑一遍完整状态机流程，打印状态迁移与副作用日志。
 /// 用 fake Dio adapter 按端点返回构造响应，不打真实服务端、不登录、无凭据。
@@ -110,7 +119,7 @@ void main() {
     email.dispose();
 
     // 方式 9 扫码确认
-    final qr = DeviceCodeLoginController(repo: repo);
+    final qr = DeviceCodeLoginController(repo: repo, postLoginChecker: _AllowChecker());
     _watch('方式9 扫码确认登录(device code + 轮询)', qr, log);
     qr.dispatch(LoginStart(LoginMethod.deviceCode));
     await Future<void>.delayed(const Duration(milliseconds: 100));

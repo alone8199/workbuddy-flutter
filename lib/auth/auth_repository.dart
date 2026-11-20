@@ -1,3 +1,5 @@
+import 'package:dio/dio.dart';
+
 import '../network/client.dart';
 import '../network/endpoints.dart';
 import '../network/api_error.dart';
@@ -55,6 +57,25 @@ class AuthRepository {
     AppLogger.instance.d('AUTH_REPO',
         'pollToken 未完成: code=${body['code']} msg=${body['msg']}');
     return null;
+  }
+
+  /// 扫码成功后回调校验：拉取账号资料判断手机号绑定状态。
+  /// 注意：此处必须用刚拿到的 token 显式带 Authorization，因为 token 尚未存入 TokenManager，
+  /// AuthInterceptor 的 tokenProvider 此刻拿不到它。extra.skipAuth 让拦截器不覆盖此头，
+  /// 同时该路径不在 noAuthPaths，401 刷新逻辑仍可正常工作。
+  Future<dynamic> fetchAccountProfile(AuthTokens tokens) async {
+    final url = env.accountProfile;
+    AppLogger.instance.i('AUTH_REPO', 'GET accountProfile(绑定校验) → $url');
+    final r = await net.dio.get<dynamic>(
+      url,
+      options: Options(
+        headers: <String, dynamic>{
+          'Authorization': 'Bearer ${tokens.accessToken}',
+        },
+        extra: <String, dynamic>{'skipAuth': true},
+      ),
+    );
+    return r.data;
   }
 
   /// 刷新 token。

@@ -37,7 +37,10 @@ class AuthInterceptor extends Interceptor {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    if (_isNoAuth(options.path)) {
+    if (options.extra['skipAuth'] == true) {
+      // 调用方已显式注入 Authorization（如扫码回调校验用刚拿到的 token），
+      // 不覆盖。401 刷新仍走下方 onError 逻辑。
+    } else if (_isNoAuth(options.path)) {
       options.headers['X-No-Authorization'] = 'true';
       options.headers['X-No-User-Id'] = 'true';
       options.headers['X-No-Enterprise-Id'] = 'true';
@@ -54,6 +57,8 @@ class AuthInterceptor extends Interceptor {
   @override
   Future<void> onError(DioException err, ErrorInterceptorHandler handler) async {
     if (err.response?.statusCode != 401) return handler.next(err);
+    // 显式注入 token 的请求（扫码回调校验）：token 尚未入库，无法刷新，直接失败。
+    if (err.requestOptions.extra['skipAuth'] == true) return handler.next(err);
     // 刷新 token 接口自身的 401：直接失败，不再递归刷新。
     if (_isNoAuth(err.requestOptions.path)) return handler.next(err);
     // 已重放过一次仍 401：踢回登录。

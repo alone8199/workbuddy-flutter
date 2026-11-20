@@ -56,6 +56,12 @@ class EnvConfig {
   /// 设备码：源码路径为 /v2/plugin/device/auth/code（plugin 已含在路径里）。
   String get deviceAuthCode => '$endpoint/v2$prefix/device/auth/code';
 
+  /// 登录后回调校验：拉取账号资料以判断是否绑定手机号。
+  /// 静态依据：接口清单第 4 节 GET /console/accounts（账号列表）。
+  /// TODO(dynamic-capture): 精确路径/字段名未坐实，目前用网关 host + /console/accounts；
+  /// 判定逻辑在 models/phone_binding.dart 中做多字段兼容，坐实后收敛。
+  String get accountProfile => '$endpoint/console/accounts';
+
   // 登录页 finalize（远端下发，走主站）。
   String get signinFinalize => '$website/signin/finalize';
 

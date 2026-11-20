@@ -2,94 +2,102 @@ import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/auth.dart';
+import '../models/phone_binding.dart';
 import '../auth/auth_repository.dart';
 import '../auth/login_controller.dart';
 import '../auth/login_events.dart';
 import '../auth/login_state_machine.dart';
-import '../auth/login_methods/passwordless_login.dart';
 import '../auth/login_methods/device_code_login.dart';
-import '../auth/login_methods/webview_oauth_login.dart';
+import '../auth/post_login_checker.dart';
+import '../util/app_logger.dart';
 
-/// 登录页主容器。布局/配色参照登录页报告（TDesign 蓝主题，卡片居中，
-/// 主方式 + "更多方式" tab/网格），不自行发挥配色与字号。
+/// 打开外部网页的回调（便于测试注入，默认实现见 [defaultUrlLauncher]）。
+typedef UrlLauncher = Future<void> Function(String url);
+
+Future<void> defaultUrlLauncher(String url) async {
+  AppLogger.instance.i('LOGIN_UI', '请求打开外部网页: $url');
+  // 桌面 Windows：由 url_launcher / 系统浏览器接管；此处仅记录，避免误触发沙箱内的网络栈。
+  // 真实产物中由注入实现调用系统默认浏览器打开 [url]。
+}
+
+/// 登录页：仅二维码扫码登录（其余登录方式按需求移除）。
+/// 扫码成功回调校验未绑定手机号时，展示"去网页绑定 → 重新扫码"引导。
 class LoginPage extends StatefulWidget {
   final AuthRepository repo;
+  final PostLoginChecker postLoginChecker;
   final void Function(AuthTokens tokens) onSuccess;
-  const LoginPage({super.key, required this.repo, required this.onSuccess});
+  final UrlLauncher urlLauncher;
+
+  const LoginPage({
+    super.key,
+    required this.repo,
+    required this.postLoginChecker,
+    required this.onSuccess,
+    this.urlLauncher = defaultUrlLauncher,
+  });
 
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
-  LoginMethod _current = LoginMethod.phone;
-  LoginController? _controller;
-  final TextEditingController _account = TextEditingController();
-  final TextEditingController _code = TextEditingController();
+class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMixin {
+  late final LoginController _controller;
+  late final AnimationController _pulse;
 
-  // 登录页样式常量（贴合原 TDesign 主蓝 #0052D9，圆角 6，正文 14）
+  // 未绑定手机号引导（由 EffectBindPhoneRequired 填充）。
+  EffectBindPhoneRequired? _bindRequired;
+
+  // 主题：贴近原版 TDesign 主蓝 #0052D9。
   static const Color _primary = Color(0xFF0052D9);
-  static const double _radius = 6.0;
+  static const Color _ink = Color(0xFF1D2129);
+  static const Color _subtle = Color(0xFF86909C);
+  static const double _radius = 16.0;
 
-  /// 统一主按钮样式：显式指定白色前景色。
-  /// 之前只设 backgroundColor，Material 3 下 foregroundColor 由 colorScheme 推导，
-  /// 在 win32 桌面渲染时被算成与底色接近的蓝，导致"字看不到"。显式固定为白色。
   ButtonStyle get _primaryButton => ElevatedButton.styleFrom(
         backgroundColor: _primary,
         foregroundColor: Colors.white,
         disabledBackgroundColor: _primary.withOpacity(0.5),
         disabledForegroundColor: Colors.white70,
+        minimumSize: const Size.fromHeight(44),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      );
+
+  ButtonStyle get _outlineButton => OutlinedButton.styleFrom(
+        foregroundColor: _primary,
+        side: const BorderSide(color: _primary),
+        minimumSize: const Size.fromHeight(44),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       );
 
   @override
   void initState() {
     super.initState();
-    _select(LoginMethod.phone);
-  }
-
-  void _select(LoginMethod method) {
-    _controller?.dispose();
-    setState(() {
-      _current = method;
-      switch (method) {
-        case LoginMethod.phone:
-        case LoginMethod.email:
-          _controller = PasswordlessLoginController(
-            target: method,
-            repo: widget.repo,
-          );
-          break;
-        case LoginMethod.deviceCode:
-          _controller = DeviceCodeLoginController(repo: widget.repo);
-          break;
-        default:
-          _controller = WebViewOAuthLoginController(
-            target: method,
-            repo: widget.repo,
-          );
-      }
-    });
-    _controller!.addListener(_onControllerChanged);
-    _controller!.dispatch(LoginStart(method));
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat(reverse: true);
+    _controller = DeviceCodeLoginController(
+      repo: widget.repo,
+      postLoginChecker: widget.postLoginChecker,
+    );
+    _controller.addListener(_onControllerChanged);
+    _controller.dispatch(LoginStart(LoginMethod.deviceCode));
   }
 
   void _onControllerChanged() {
     if (!mounted) return;
-    final effects = _controller!.consumeEffects();
+    final effects = _controller.consumeEffects();
     for (final e in effects) {
       if (e is EffectNavigateHome) {
         widget.onSuccess(e.tokens);
+      } else if (e is EffectBindPhoneRequired) {
+        setState(() => _bindRequired = e);
       } else if (e is EffectShowMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(e.message)),
         );
-      } else if (e is EffectStartCountdown) {
-        // 倒计时由 controller 内部 UI state 驱动按钮禁用。
-      } else if (e is EffectOpenWebView) {
-        // WebView 容器：端点未坐实（iOA/SSO/华硕）时 controller 已给出提示。
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('需在 WebView2 中打开：${e.url}')),
-        );
+      } else if (e is EffectRefreshQr) {
+        _controller.dispatch(LoginRetry());
       }
     }
   }
@@ -97,14 +105,24 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
-      body: Center(
-        child: SingleChildScrollView(
-          child: SizedBox(
-            width: 400,
-            child: AnimatedBuilder(
-              animation: _controller!,
-              builder: (context, _) => _buildCard(_controller!.state),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[Color(0xFFF2F6FF), Color(0xFFEAF0FB)],
+          ),
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+            child: SizedBox(
+              width: 420,
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, _) =>
+                    _bindRequired != null ? _buildBindCard() : _buildLoginCard(_controller.state),
+              ),
             ),
           ),
         ),
@@ -112,235 +130,288 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  Widget _buildCard(LoginUiState st) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(_radius)),
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            const Text(
-              '登录 WorkBuddy',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 20),
-            _buildMethodTabs(),
-            const SizedBox(height: 20),
-            _buildMethodBody(st),
-            if (st.message != null) ...<Widget>[
-              const SizedBox(height: 12),
-              Text(
-                st.message!,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: st.phase == LoginPhase.failed ? Colors.red : Colors.grey[600],
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMethodTabs() {
-    // 主方式 tab：手机号 / 邮箱 / 二维码；更多方式以 Wrap 提供。
-    final methods = <LoginMethod>[
-      LoginMethod.phone,
-      LoginMethod.email,
-      LoginMethod.deviceCode,
-    ];
-    return Row(
-      children: methods.map((m) {
-        final selected = _current == m;
-        return Expanded(
-          child: GestureDetector(
-            onTap: () => _select(m),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(
-                    color: selected ? _primary : Colors.transparent,
-                    width: 2,
-                  ),
-                ),
-              ),
-              child: Text(
-                _label(m),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: selected ? _primary : Colors.grey[700],
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                ),
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  Widget _buildMethodBody(LoginUiState st) {
-    switch (_current) {
-      case LoginMethod.phone:
-      case LoginMethod.email:
-        return _buildPasswordless(st);
-      case LoginMethod.deviceCode:
-        return _buildQr(st);
-      default:
-        return _buildMoreMethods();
-    }
-  }
-
-  Widget _buildPasswordless(LoginUiState st) {
-    final isPhone = _current == LoginMethod.phone;
+  /// 品牌头：图标 + 标题 + 副标题。
+  Widget _buildBrand() {
     return Column(
-      children: <Widget>[
-        TextField(
-          controller: _account,
-          decoration: InputDecoration(
-            labelText: isPhone ? '手机号' : '邮箱',
-            border: const OutlineInputBorder(),
-            prefixText: isPhone ? '+86 ' : null,
-          ),
-          keyboardType: isPhone ? TextInputType.phone : TextInputType.emailAddress,
+      children: const <Widget>[
+        CircleAvatar(
+          radius: 30,
+          backgroundColor: _primary,
+          child: Icon(Icons.auto_awesome, color: Colors.white, size: 30),
         ),
-        const SizedBox(height: 12),
-        Row(
-          children: <Widget>[
-            Expanded(
-              child: TextField(
-                controller: _code,
-                decoration: const InputDecoration(
-                  labelText: '验证码',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-              ),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton(
-              style: _primaryButton,
-              onPressed: st.countdown > 0
-                  ? null
-                  : () => _controller!.dispatch(LoginSendCode(_account.text.trim())),
-              child: Text(st.countdown > 0 ? '${st.countdown}s 后重发' : '获取验证码'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton(
-            style: _primaryButton,
-            onPressed: st.loading
-                ? null
-                : () => _controller!.dispatch(LoginSubmitCode(_code.text.trim())),
-            child: const Text('登录'),
+        SizedBox(height: 14),
+        Text(
+          'WorkBuddy',
+          style: TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.w700,
+            color: _ink,
+            letterSpacing: 0.5,
           ),
+        ),
+        SizedBox(height: 6),
+        Text(
+          '扫码登录，开启智能工作',
+          style: TextStyle(fontSize: 13, color: _subtle),
         ),
       ],
     );
   }
 
-  Widget _buildQr(LoginUiState st) {
+  Widget _card({required Widget child}) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(_radius),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x1A0052D9),
+            blurRadius: 24,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 30),
+        child: child,
+      ),
+    );
+  }
+
+  Widget _buildLoginCard(LoginUiState st) {
+    return _card(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          _buildBrand(),
+          const SizedBox(height: 28),
+          _buildQrArea(st),
+          const SizedBox(height: 20),
+          _buildStatusHint(st),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQrArea(LoginUiState st) {
     final qr = st.qrContent;
     final failed = st.phase == LoginPhase.failed;
+
+    Widget inner;
+    if (qr != null) {
+      inner = AbsorbPointer(
+        child: QrImageView(
+          data: qr,
+          version: QrVersions.auto,
+          size: 196,
+          backgroundColor: Colors.white,
+          eyeStyle: const QrEyeStyle(
+            eyeShape: QrEyeShape.square,
+            color: _ink,
+          ),
+          dataModuleStyle: const QrDataModuleStyle(
+            dataModuleShape: QrDataModuleShape.square,
+            color: _ink,
+          ),
+        ),
+      );
+    } else if (failed) {
+      inner = SizedBox(
+        height: 196,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Icon(Icons.error_outline, size: 40, color: Colors.redAccent),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text(
+                  st.message ?? '二维码获取失败',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: Colors.redAccent),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else {
+      inner = const SizedBox(
+        height: 196,
+        child: Center(
+          child: CircularProgressIndicator(color: _primary),
+        ),
+      );
+    }
+
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFE5E8EF), width: 1),
+        ),
+        child: inner,
+      ),
+    );
+  }
+
+  Widget _buildStatusHint(LoginUiState st) {
+    final failed = st.phase == LoginPhase.failed;
+    final waiting = st.phase == LoginPhase.awaitingCallback;
+
+    IconData icon;
+    Color iconColor;
+    String text;
+    if (failed) {
+      icon = Icons.refresh;
+      iconColor = _primary;
+      text = '点击重新获取二维码';
+    } else if (waiting) {
+      icon = Icons.qr_code_scanner;
+      iconColor = _primary;
+      text = '请使用手机扫码并在浏览器中完成登录';
+    } else {
+      icon = Icons.hourglass_empty;
+      iconColor = _subtle;
+      text = st.message ?? '正在准备二维码…';
+    }
+
     return Column(
       children: <Widget>[
-        if (qr != null)
-          QrImageView(data: qr, version: QrVersions.auto, size: 180)
-        else
-          Container(
-            height: 180,
-            alignment: Alignment.center,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            color: Colors.grey[100],
-            child: Text(
-              failed ? '二维码获取失败' : '二维码加载中…',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 13,
-                color: failed ? Colors.red[700] : Colors.grey[700],
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(icon, size: 16, color: iconColor),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                text,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: failed ? _primary : _subtle),
               ),
             ),
-          ),
-        const SizedBox(height: 12),
-        ElevatedButton(
-          style: _primaryButton,
-          onPressed: () => _controller!.dispatch(LoginRetry()),
-          child: const Text('刷新二维码'),
+          ],
         ),
+        if (waiting) ...<Widget>[
+          const SizedBox(height: 6),
+          FadeTransition(
+            opacity: _pulse,
+            child: const Text(
+              '等待扫码确认…',
+              style: TextStyle(fontSize: 12, color: _subtle),
+            ),
+          ),
+        ],
         if (failed) ...<Widget>[
-          const SizedBox(height: 8),
-          Text(
+          const SizedBox(height: 14),
+          ElevatedButton(
+            style: _primaryButton,
+            onPressed: () {
+              setState(() => _bindRequired = null);
+              _controller.dispatch(LoginRetry());
+            },
+            child: const Text('重新获取二维码'),
+          ),
+          const SizedBox(height: 10),
+          const Text(
             '失败原因详见日志（用户目录 .workbuddy/logs/app.log）',
-            style: TextStyle(fontSize: 11, color: Colors.grey[600]),
             textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11, color: _subtle),
           ),
         ],
       ],
     );
   }
 
-  Widget _buildMoreMethods() {
-    // "更多方式"：微信/QQ/企微/iOA/SSO/华硕，与主方式同一入口组。
-    final more = <LoginMethod>[
-      LoginMethod.wechat,
-      LoginMethod.qq,
-      LoginMethod.wecom,
-      LoginMethod.ioa,
-      LoginMethod.sso,
-      LoginMethod.asus,
-    ];
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      alignment: WrapAlignment.center,
-      children: more.map((m) {
-        return OutlinedButton(
-          onPressed: () => _select(m),
-          child: Text(_label(m)),
-        );
-      }).toList(),
+  /// 未绑定手机号引导卡片：提示去网页绑定后重新扫码。
+  Widget _buildBindCard() {
+    final info = _bindRequired!;
+    return _card(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const SizedBox(height: 4),
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF3E8),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Icon(Icons.phone_disabled, size: 34, color: Color(0xFFD46B08)),
+          ),
+          const SizedBox(height: 18),
+          const Text(
+            '需要绑定手机号',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: _ink),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            info.message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 14, color: Color(0xFF4E5969), height: 1.5),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF7F8FA),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '绑定状态：${_statusLabel(info.bindingStatus)}（${info.bindingStatus.name}）',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: _subtle),
+            ),
+          ),
+          const SizedBox(height: 20),
+          ElevatedButton(
+            style: _primaryButton,
+            onPressed: () => widget.urlLauncher(info.bindUrl),
+            child: const Text('前往网页绑定手机号'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton(
+            style: _outlineButton,
+            onPressed: () {
+              setState(() => _bindRequired = null);
+              _controller.dispatch(LoginRetry());
+            },
+            child: const Text('绑定后重新扫码'),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            '绑定完成后请回到这里重新扫码登录。',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: _subtle),
+          ),
+        ],
+      ),
     );
   }
 
-  String _label(LoginMethod m) {
-    switch (m) {
-      case LoginMethod.phone:
-        return '手机号';
-      case LoginMethod.email:
-        return '邮箱';
-      case LoginMethod.deviceCode:
-        return '二维码';
-      case LoginMethod.wechat:
-        return '微信';
-      case LoginMethod.qq:
-        return 'QQ';
-      case LoginMethod.wecom:
-        return '企业微信';
-      case LoginMethod.ioa:
-        return 'iOA';
-      case LoginMethod.sso:
-        return 'SSO';
-      case LoginMethod.asus:
-        return '华硕账号';
+  String _statusLabel(PhoneBindingStatus s) {
+    switch (s) {
+      case PhoneBindingStatus.unbound:
+        return '未绑定';
+      case PhoneBindingStatus.unknown:
+        return '未能确认（接口待坐实）';
+      case PhoneBindingStatus.bound:
+        return '已绑定';
     }
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
-    _account.dispose();
-    _code.dispose();
+    _pulse.dispose();
+    _controller.removeListener(_onControllerChanged);
+    _controller.dispose();
     super.dispose();
   }
 }

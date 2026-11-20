@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'models/auth.dart';
 import 'auth/token_manager.dart';
 import 'auth/auth_repository.dart';
+import 'auth/post_login_checker.dart';
 import 'network/client.dart';
 import 'ui/shell.dart';
 import 'ui/login_page.dart';
@@ -49,6 +50,11 @@ class _WorkbuddyAppState extends State<WorkbuddyApp> {
           ? AppShell(tokenManager: widget.tokenManager, network: widget.network)
           : LoginPage(
               repo: widget.authRepository,
+              postLoginChecker: PhoneBindingChecker(
+                repo: widget.authRepository,
+                // 绑定接口未坐实前保守放行 unknown；明确 unbound 仍会拦截。
+                blockOnUnknown: false,
+              ),
               onSuccess: _onLoginSuccess,
             ),
     );

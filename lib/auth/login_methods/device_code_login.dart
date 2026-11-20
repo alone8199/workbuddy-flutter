@@ -3,6 +3,7 @@ import 'dart:async';
 import '../../models/auth.dart';
 import '../../util/app_logger.dart';
 import '../auth_repository.dart';
+import '../post_login_checker.dart';
 import '../login_state_machine.dart';
 import '../login_controller.dart';
 import '../login_events.dart';
@@ -15,12 +16,14 @@ import 'base_login.dart';
 class DeviceCodeLoginController extends LoginController {
   final AuthRepository repo;
   final String websiteOrigin;
+  final PostLoginChecker postLoginChecker;
   Timer? _pollTimer;
   static const int _pollIntervalMs = 2000;
   DateTime? _deadline;
 
   DeviceCodeLoginController({
     required this.repo,
+    required this.postLoginChecker,
     this.websiteOrigin = 'https://www.workbuddy.cn',
   }) : super(LoginMethod.deviceCode);
 
@@ -141,10 +144,10 @@ class DeviceCodeLoginController extends LoginController {
       // state 轮询：报告为 GET /v2{prefix}/auth/token?state=；这里用 deviceCode 作 state。
       final tokens = await repo.pollToken(deviceCode);
       if (tokens != null) {
-        log.i('QR_LOGIN', '轮询成功，拿到 token，停止轮询');
+        log.i('QR_LOGIN', '轮询成功，拿到 token，停止轮询，进入回调校验');
         _pollTimer?.cancel();
         go(LoginPhase.exchangingToken);
-        succeed(tokens);
+        await _runPostLoginCheck(tokens);
         return;
       }
       final attempt = state.pollAttempt + 1;
@@ -157,6 +160,42 @@ class DeviceCodeLoginController extends LoginController {
       // 轮询网络抖动不终止，继续下一 tick，但完整记录异常。
       log.w('QR_LOGIN', '轮询网络异常，本轮忽略继续: $e', e, st);
       setState(state.copyWith(message: '网络波动，重试轮询中…'));
+    }
+  }
+
+  /// 扫码拿到 token 后的回调校验：未绑定手机号则拦截，引导去网页绑定后重新扫码。
+  Future<void> _runPostLoginCheck(AuthTokens tokens) async {
+    final log = AppLogger.instance;
+    setState(state.copyWith(loading: true, message: '正在校验账号信息…'));
+    try {
+      final outcome = await postLoginChecker.check(tokens);
+      if (outcome is PostLoginAllowed) {
+        log.i('QR_LOGIN', '回调校验通过，登录成功');
+        succeed(tokens);
+      } else if (outcome is PostLoginBlocked) {
+        log.w('QR_LOGIN',
+            '回调校验拦截：状态=${outcome.binding.statusName}，账号未绑定手机号');
+        // 拦截：停轮询、清空二维码与 token 上下文，停留在 awaitingCallback 之前的阶段，
+        // 让用户可以在 UI 引导下去网页绑定后点击重新扫码。
+        _pollTimer?.cancel();
+        go(LoginPhase.failed);
+        setState(state.copyWith(
+          loading: false,
+          qrContent: null,
+          codeOrTicket: null,
+          clearQr: true,
+          message: outcome.message,
+        ));
+        emit(EffectBindPhoneRequired(
+          outcome.bindUrl,
+          outcome.message,
+          outcome.binding.status,
+        ));
+      }
+    } catch (e, st) {
+      // 校验器自身异常：保守放行，避免把已登录用户挡在门外（记录完整日志）。
+      log.e('QR_LOGIN', '回调校验异常，保守放行: $e', e, st);
+      succeed(tokens);
     }
   }
 

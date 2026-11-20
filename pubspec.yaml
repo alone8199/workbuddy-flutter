@@ -20,8 +20,10 @@ dependencies:
   # （2.3.9 依赖的 riverpod 2.3.9 在 pub.dev 不存在，故退到 2.3.7）
   flutter_riverpod: 2.3.7
 
-  # 安全存储
-  flutter_secure_storage: 9.2.4
+  # 安全存储：9.x 的 Windows 实现依赖 win32 ^5（需 Dart 3），
+  # 与本项目锁定的 Dart 2.19 / win32 4.x 不兼容，会致 Windows AOT 编译失败。
+  # 8.1.0 拉 windows 实现 2.1.0（win32 >=3.1.3 <4），与 Dart 2.19 完全兼容。
+  flutter_secure_storage: 8.1.0
 
   # 刷新互斥锁
   synchronized: 3.1.0
@@ -45,11 +47,6 @@ dev_dependencies:
   flutter_lints: 2.0.3
   build_runner: 2.3.3
   json_serializable: 6.6.2
-
-# Flutter 3.7 锁 Dart 2.19；部分插件的传递依赖 win32 ^5 要求 Dart 3，
-# 这里压到兼容 2.19 的最高版本 4.1.4（官方 Windows 插件 API 在 4.x 下可编译）。
-dependency_overrides:
-  win32: 4.1.4
 
 flutter:
   uses-material-design: true

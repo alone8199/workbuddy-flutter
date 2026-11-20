@@ -51,6 +51,20 @@ class Environment {
     }
   }
 
+  /// 产品网关 endpoint（cli/product.json endpoint 字段）。
+  /// 桌面认证接口（device/auth/code、auth/state、token、handoff）走此 host + /v2/plugin。
+  /// 实测 www.workbuddy.cn/v2/plugin/auth/state → 200；api.account.tencent.com 同路径 → 404。
+  String get endpoint {
+    switch (env) {
+      case AppEnv.international:
+        return 'https://www.codebuddy.ai';
+      case AppEnv.pre:
+        return 'https://staging.workbuddy.cn';
+      default:
+        return 'https://www.workbuddy.cn';
+    }
+  }
+
   String get label {
     switch (env) {
       case AppEnv.international:

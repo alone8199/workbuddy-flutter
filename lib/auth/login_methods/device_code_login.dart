@@ -43,11 +43,33 @@ class DeviceCodeLoginController extends LoginController {
 
   Future<void> _start() async {
     final log = AppLogger.instance;
-    log.i('QR_LOGIN', '开始获取二维码 deviceAuthCode(), website=$websiteOrigin');
     initMachine();
     go(LoginPhase.pendingInput);
     setState(state.copyWith(loading: true, message: '正在获取登录二维码…'));
+
+    // 主路径：auth/state 公开流程（实测 www.workbuddy.cn/v2/plugin/auth/state → 200，
+    // 返回 {state, authUrl}，全公开无需网关鉴权）。二维码内容=authUrl，轮询 key=state。
     try {
+      log.i('QR_LOGIN', '获取登录二维码：POST auth/state?platform=workbuddy');
+      final s = await repo.authState('workbuddy');
+      log.i('QR_LOGIN', 'auth/state 返回: ${AppLogger.truncate(s)}');
+      final authUrl = s['authUrl'] as String?;
+      final pollKey = s['state'] as String?;
+      if (authUrl != null && authUrl.isNotEmpty && pollKey != null) {
+        _deadline = DateTime.now().add(const Duration(minutes: 5));
+        log.i('QR_LOGIN', '二维码已生成(auth/state), state=${AppLogger.mask(pollKey)} url=$authUrl');
+        _applyQr(authUrl, pollKey);
+        return;
+      }
+      log.w('QR_LOGIN', 'auth/state 缺少 authUrl/state，回退 device/auth/code');
+    } catch (e, st) {
+      log.w('QR_LOGIN', 'auth/state 失败，回退 device/auth/code: $e', e, st);
+    }
+
+    // 回退路径：device/auth/code（POST /v2/plugin/device/auth/code）。
+    // 实测该端点在正确 host 上返回 401（网关鉴权），静态未坐实所需凭据，可能失败。
+    try {
+      log.i('QR_LOGIN', '回退：POST deviceAuthCode()');
       final resp = await repo.deviceAuthCode();
       log.i('QR_LOGIN', 'deviceAuthCode 返回: ${AppLogger.truncate(resp)}');
       final code = resp['deviceCode'] as String?;
@@ -56,12 +78,11 @@ class DeviceCodeLoginController extends LoginController {
         fail('获取二维码失败：服务端未返回 deviceCode（详见日志）');
         return;
       }
-      // 二维码内容：${websiteOrigin}/console/client-login?code=${code}&target=
       final qr = '$websiteOrigin/console/client-login?code=$code&target=';
       final rawExpiry = resp['expiresIn'] ?? resp['expires_in'];
-      final seconds = rawExpiry is num ? rawExpiry.toInt() : 300; // 5 分钟基线
+      final seconds = rawExpiry is num ? rawExpiry.toInt() : 300;
       _deadline = DateTime.now().add(Duration(seconds: seconds));
-      log.i('QR_LOGIN', '二维码已生成, deviceCode=${AppLogger.mask(code)}, 有效期=${seconds}s');
+      log.i('QR_LOGIN', '二维码已生成(deviceCode), deviceCode=${AppLogger.mask(code)}, 有效期=${seconds}s');
       _applyQr(qr, code);
     } catch (e, st) {
       // 不再吞异常：完整打印类型/堆栈，UI 提示带简短原因。

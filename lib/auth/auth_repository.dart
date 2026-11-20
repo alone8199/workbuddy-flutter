@@ -23,17 +23,37 @@ class AuthRepository {
   }
 
   /// 登录初始化：拿 authUrl 与 state。
+  /// 响应结构：{code:0, msg:"OK", data:{state, authUrl}}（实测 www.workbuddy.cn/v2/plugin/auth/state → 200）。
   Future<Map<String, dynamic>> authState(String platform) async {
     final r = await net.dio.post<dynamic>(env.authState(platform));
-    return (r.data is Map) ? Map<String, dynamic>.from(r.data as Map) : <String, dynamic>{};
+    final body = (r.data is Map) ? Map<String, dynamic>.from(r.data as Map) : <String, dynamic>{};
+    // 解包 data 层，同时保留 code/msg 供判断。
+    if (body['data'] is Map) {
+      final data = Map<String, dynamic>.from(body['data'] as Map);
+      data.putIfAbsent('code', () => body['code']);
+      data.putIfAbsent('msg', () => body['msg']);
+      return data;
+    }
+    return body;
   }
 
-  /// 轮询换 token（device code 模式）。
+  /// 轮询换 token（auth/state 或 device code 模式）。
+  /// pending 时服务端返回 {code:11217, msg:"login ing..."}（实测），此处返回 null 表示继续轮询。
+  /// 登录成功后返回 {access_token, refresh_token, ...} 或包在 data 里，两种都兼容。
   Future<AuthTokens?> pollToken(String state) async {
     final r = await net.dio.get<dynamic>(env.authToken(state));
-    if (r.data is Map && (r.data as Map)['access_token'] != null) {
-      return AuthTokens.fromJson(Map<String, dynamic>.from(r.data as Map));
+    if (r.data is! Map) return null;
+    final body = Map<String, dynamic>.from(r.data as Map);
+    // 成功结构优先取顶层，其次取 data 层。
+    final tokenMap = body['access_token'] != null
+        ? body
+        : (body['data'] is Map ? Map<String, dynamic>.from(body['data'] as Map) : body);
+    if (tokenMap['access_token'] != null) {
+      return AuthTokens.fromJson(tokenMap);
     }
+    // pending / 其他业务码：记录到日志由上层处理，这里按"未完成"返回 null。
+    AppLogger.instance.d('AUTH_REPO',
+        'pollToken 未完成: code=${body['code']} msg=${body['msg']}');
     return null;
   }
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../../models/auth.dart';
+import '../../util/app_logger.dart';
 import '../auth_repository.dart';
 import '../login_state_machine.dart';
 import '../login_controller.dart';
@@ -41,14 +42,18 @@ class DeviceCodeLoginController extends LoginController {
   }
 
   Future<void> _start() async {
+    final log = AppLogger.instance;
+    log.i('QR_LOGIN', '开始获取二维码 deviceAuthCode(), website=$websiteOrigin');
     initMachine();
     go(LoginPhase.pendingInput);
     setState(state.copyWith(loading: true, message: '正在获取登录二维码…'));
     try {
       final resp = await repo.deviceAuthCode();
+      log.i('QR_LOGIN', 'deviceAuthCode 返回: ${AppLogger.truncate(resp)}');
       final code = resp['deviceCode'] as String?;
       if (code == null) {
-        fail('获取二维码失败，请重试');
+        log.w('QR_LOGIN', '响应缺少 deviceCode 字段，原始响应=${AppLogger.truncate(resp)}');
+        fail('获取二维码失败：服务端未返回 deviceCode（详见日志）');
         return;
       }
       // 二维码内容：${websiteOrigin}/console/client-login?code=${code}&target=
@@ -56,10 +61,31 @@ class DeviceCodeLoginController extends LoginController {
       final rawExpiry = resp['expiresIn'] ?? resp['expires_in'];
       final seconds = rawExpiry is num ? rawExpiry.toInt() : 300; // 5 分钟基线
       _deadline = DateTime.now().add(Duration(seconds: seconds));
+      log.i('QR_LOGIN', '二维码已生成, deviceCode=${AppLogger.mask(code)}, 有效期=${seconds}s');
       _applyQr(qr, code);
-    } catch (_) {
-      fail('网络异常，二维码获取失败');
+    } catch (e, st) {
+      // 不再吞异常：完整打印类型/堆栈，UI 提示带简短原因。
+      log.e('QR_LOGIN', '获取二维码失败: $e', e, st);
+      fail('网络异常，二维码获取失败（${_shortReason(e)}）');
     }
+  }
+
+  /// 把异常压成一句人话，便于 UI 直接看到失败原因。
+  String _shortReason(Object e) {
+    final s = e.toString();
+    if (s.contains('SocketException') || s.contains('Connection refused')) {
+      return '无法连接服务端';
+    }
+    if (s.contains('TimeoutException') || s.contains('timeout')) {
+      return '请求超时';
+    }
+    if (s.contains('404')) return '接口 404（端点未开放）';
+    if (s.contains('403')) return '403 被拒绝';
+    if (s.contains('500') || s.contains('502') || s.contains('503')) {
+      return '服务端 5xx';
+    }
+    // 返回前 60 字符，避免撑破卡片。
+    return s.length > 60 ? '${s.substring(0, 60)}…' : s;
   }
 
   void _applyQr(String qr, String deviceCode) {
@@ -87,28 +113,34 @@ class DeviceCodeLoginController extends LoginController {
   }
 
   Future<void> _poll() async {
+    final log = AppLogger.instance;
     final deviceCode = state.codeOrTicket;
     if (deviceCode == null) return;
     try {
       // state 轮询：报告为 GET /v2{prefix}/auth/token?state=；这里用 deviceCode 作 state。
       final tokens = await repo.pollToken(deviceCode);
       if (tokens != null) {
+        log.i('QR_LOGIN', '轮询成功，拿到 token，停止轮询');
         _pollTimer?.cancel();
         go(LoginPhase.exchangingToken);
         succeed(tokens);
         return;
       }
+      final attempt = state.pollAttempt + 1;
+      log.d('QR_LOGIN', '轮询第 $attempt 次：待确认（token=null，通常=authorization_pending）');
       setState(state.copyWith(
-        pollAttempt: state.pollAttempt + 1,
-        message: '等待扫码确认…（第 ${state.pollAttempt + 1} 次轮询）',
+        pollAttempt: attempt,
+        message: '等待扫码确认…（第 $attempt 次轮询）',
       ));
-    } catch (_) {
-      // 轮询网络抖动不终止，继续下一 tick。
+    } catch (e, st) {
+      // 轮询网络抖动不终止，继续下一 tick，但完整记录异常。
+      log.w('QR_LOGIN', '轮询网络异常，本轮忽略继续: $e', e, st);
       setState(state.copyWith(message: '网络波动，重试轮询中…'));
     }
   }
 
   void _expire() {
+    AppLogger.instance.i('QR_LOGIN', '二维码过期，停止轮询，等待刷新');
     _pollTimer?.cancel();
     setState(state.copyWith(
       message: '二维码已过期，请点击刷新',

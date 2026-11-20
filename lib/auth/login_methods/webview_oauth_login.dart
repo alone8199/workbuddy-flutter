@@ -1,4 +1,5 @@
 import '../../models/auth.dart';
+import '../../util/app_logger.dart';
 import '../auth_repository.dart';
 import '../login_state_machine.dart';
 import '../login_controller.dart';
@@ -89,7 +90,10 @@ class WebViewOAuthLoginController extends LoginController {
       // code/ticket → token：handoff（一次性码）或 finalize（ticket）。
       final tokens = await repo.handoff(codeOrTicket);
       succeed(tokens);
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.instance.e('WEBVIEW_LOGIN',
+          '换取凭证失败 target=${target.name} code=${AppLogger.mask(codeOrTicket)}: $e',
+          e, st);
       fail('换取登录凭证失败，请重试');
     }
   }

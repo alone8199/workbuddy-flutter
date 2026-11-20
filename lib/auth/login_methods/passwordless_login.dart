@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../models/auth.dart';
 import '../../network/api_error.dart';
+import '../../util/app_logger.dart';
 import '../auth_repository.dart';
 import '../login_state_machine.dart';
 import '../login_controller.dart';
@@ -39,10 +40,13 @@ class PasswordlessLoginController extends LoginController {
   }
 
   Future<void> _sendCode(String account) async {
+    final log = AppLogger.instance;
+    log.i('CODE_LOGIN', '发码 target=${target.name} account=${AppLogger.mask(account)}');
     setState(state.copyWith(loading: true));
     emit(EffectShowMessage('正在发送验证码…'));
     try {
       final resp = await repo.sendCode(target, account);
+      log.i('CODE_LOGIN', '发码响应: ${AppLogger.truncate(resp)}');
       // 倒计时：优先用响应里的 interval/cooldown（秒），否则 60s。
       final dynamic interval = resp['interval'] ?? resp['cooldown'] ?? resp['resendInterval'];
       final seconds = interval is num ? interval.toInt() : 60;
@@ -51,8 +55,10 @@ class PasswordlessLoginController extends LoginController {
       emit(EffectStartCountdown(seconds));
       _startCountdown(seconds);
     } on ApiFailure catch (f) {
+      log.w('CODE_LOGIN', '发码失败 ApiFailure: ${f.apiError}', f);
       fail(f.apiError.message);
-    } catch (_) {
+    } catch (e, st) {
+      log.e('CODE_LOGIN', '发码网络异常: $e', e, st);
       fail('网络异常，发送失败，请重试');
     }
   }
@@ -70,6 +76,7 @@ class PasswordlessLoginController extends LoginController {
         succeed(tokens);
       }
     } on ApiFailure catch (f) {
+      AppLogger.instance.w('CODE_LOGIN', '验证失败 ApiFailure: ${f.apiError}', f);
       // 验证码错回 PendingInput 让用户重填，不直接终止流程。
       if (f.apiError.code == ApiErrorCode.invalidCaptcha) {
         setState(state.copyWith(loading: false, message: f.apiError.message));
@@ -77,7 +84,8 @@ class PasswordlessLoginController extends LoginController {
       } else {
         fail(f.apiError.message);
       }
-    } catch (_) {
+    } catch (e, st) {
+      AppLogger.instance.e('CODE_LOGIN', '验证网络异常: $e', e, st);
       fail('网络异常，验证失败，请重试');
     }
   }

@@ -6,6 +6,7 @@ import 'interceptor/auth_interceptor.dart';
 import 'interceptor/retry_interceptor.dart';
 import 'interceptor/error_interceptor.dart';
 import 'interceptor/cookie/cookie_store.dart';
+import 'interceptor/logging_interceptor.dart';
 
 /// 全局网络客户端：dio 实例 + 拦截器链编排（设计文档 2.3 方案 C）。
 /// - baseUrl 按 Environment 多环境切换；
@@ -56,6 +57,8 @@ class NetworkClient {
       noAuthPaths: noAuthPaths,
     );
     dio.interceptors.addAll(<Interceptor>[
+      // 放最前：onRequest 最先记录原始请求；onError 最后记录归一化后的错误。
+      LoggingInterceptor(),
       HeaderInterceptor(
         appVersion: appVersion,
         language: language,

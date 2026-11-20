@@ -31,6 +31,16 @@ class _LoginPageState extends State<LoginPage> {
   static const Color _primary = Color(0xFF0052D9);
   static const double _radius = 6.0;
 
+  /// 统一主按钮样式：显式指定白色前景色。
+  /// 之前只设 backgroundColor，Material 3 下 foregroundColor 由 colorScheme 推导，
+  /// 在 win32 桌面渲染时被算成与底色接近的蓝，导致"字看不到"。显式固定为白色。
+  ButtonStyle get _primaryButton => ElevatedButton.styleFrom(
+        backgroundColor: _primary,
+        foregroundColor: Colors.white,
+        disabledBackgroundColor: _primary.withOpacity(0.5),
+        disabledForegroundColor: Colors.white70,
+      );
+
   @override
   void initState() {
     super.initState();
@@ -217,7 +227,7 @@ class _LoginPageState extends State<LoginPage> {
             ),
             const SizedBox(height: 8),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: _primary),
+              style: _primaryButton,
               onPressed: st.countdown > 0
                   ? null
                   : () => _controller!.dispatch(LoginSendCode(_account.text.trim())),
@@ -229,7 +239,7 @@ class _LoginPageState extends State<LoginPage> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: _primary),
+            style: _primaryButton,
             onPressed: st.loading
                 ? null
                 : () => _controller!.dispatch(LoginSubmitCode(_code.text.trim())),
@@ -242,6 +252,7 @@ class _LoginPageState extends State<LoginPage> {
 
   Widget _buildQr(LoginUiState st) {
     final qr = st.qrContent;
+    final failed = st.phase == LoginPhase.failed;
     return Column(
       children: <Widget>[
         if (qr != null)
@@ -250,16 +261,31 @@ class _LoginPageState extends State<LoginPage> {
           Container(
             height: 180,
             alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             color: Colors.grey[100],
-            child: const Text('二维码加载中…'),
+            child: Text(
+              failed ? '二维码获取失败' : '二维码加载中…',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: failed ? Colors.red[700] : Colors.grey[700],
+              ),
+            ),
           ),
         const SizedBox(height: 12),
-        if (st.phase == LoginPhase.failed || st.qrContent == null)
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: _primary),
-            onPressed: () => _controller!.dispatch(LoginRetry()),
-            child: const Text('刷新二维码'),
+        ElevatedButton(
+          style: _primaryButton,
+          onPressed: () => _controller!.dispatch(LoginRetry()),
+          child: const Text('刷新二维码'),
+        ),
+        if (failed) ...<Widget>[
+          const SizedBox(height: 8),
+          Text(
+            '失败原因详见日志（用户目录 .workbuddy/logs/app.log）',
+            style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+            textAlign: TextAlign.center,
           ),
+        ],
       ],
     );
   }

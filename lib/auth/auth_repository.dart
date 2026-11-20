@@ -2,6 +2,7 @@ import '../network/client.dart';
 import '../network/endpoints.dart';
 import '../network/api_error.dart';
 import '../models/auth.dart';
+import '../util/app_logger.dart';
 
 /// 认证接口封装：state / token 轮询 / refresh / handoff / finalize / 发码 / 换码。
 /// TODO(dynamic-capture): prefixPath、expiresIn 单位、各登录方式完整 authz 顺序需抓包；
@@ -53,6 +54,7 @@ class AuthRepository {
 
   /// 生成设备码（扫码确认登录第一步）。
   Future<Map<String, dynamic>> deviceAuthCode() async {
+    AppLogger.instance.i('AUTH_REPO', 'POST deviceAuthCode → ${env.deviceAuthCode}');
     final r = await net.dio.post<dynamic>(env.deviceAuthCode);
     return (r.data is Map) ? Map<String, dynamic>.from(r.data as Map) : <String, dynamic>{};
   }

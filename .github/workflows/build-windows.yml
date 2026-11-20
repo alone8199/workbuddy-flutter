@@ -1,0 +1,60 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    # Flutter 3.7.12（2023）在 windows-latest（Server 2025 / VS2026）上可能有工具链兼容问题，
+    # 固定 windows-2022（VS2022）更稳，与项目 MSVC toolchain 需求一致。
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.7.12
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          version: '3.7.12'
+          cache: true
+
+      - name: Flutter version & doctor
+        run: |
+          flutter --version
+          flutter config --enable-windows-desktop
+          flutter doctor -v
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Build Windows (release)
+        run: flutter build windows --release
+
+      - name: Package build output
+        shell: pwsh
+        run: |
+          $src = "build/windows/runner/Release"
+          if (Test-Path $src) {
+            Compress-Archive -Path "$src\*" -DestinationPath "workbuddy-windows-release.zip" -Force
+            Write-Host "Packaged $src -> workbuddy-windows-release.zip"
+          } else {
+            Write-Error "Build output not found at $src"
+            exit 1
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-windows-release
+          path: workbuddy-windows-release.zip
+          if-no-files-found: error
+          retention-days: 30

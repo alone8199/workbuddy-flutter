@@ -1,0 +1,55 @@
+name: workbuddy
+description: WorkBuddy Flutter rewrite - client compatibility skeleton (Windows only).
+publish_to: 'none'
+version: 5.11.3+1
+
+environment:
+  sdk: '>=2.19.6 <3.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # 网络
+  dio: 5.11.1
+
+  # 状态管理（选 riverpod：编译期安全、无 BuildContext 依赖、适合分层；provider 已停止演进）
+  # 2.3.7 用 meta ^1.4.0，与 Flutter 3.7 SDK 锁定的 meta 1.8.0 兼容
+  # （2.3.9 依赖的 riverpod 2.3.9 在 pub.dev 不存在，故退到 2.3.7）
+  flutter_riverpod: 2.3.7
+
+  # 安全存储
+  flutter_secure_storage: 9.2.4
+
+  # 刷新互斥锁
+  synchronized: 3.1.0
+
+  # 渲染
+  flutter_markdown: 0.6.15
+  qr_flutter: 4.1.0
+  webview_windows: 0.4.0
+
+  # 数据类序列化
+  json_annotation: 4.8.1
+
+  # 工具
+  uuid: 3.0.7
+  package_info_plus: 4.2.0
+  crypto: 3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 2.0.3
+  build_runner: 2.3.3
+  json_serializable: 6.6.2
+
+# Flutter 3.7 锁 Dart 2.19；部分插件的传递依赖 win32 ^5 要求 Dart 3，
+# 这里压到兼容 2.19 的最高版本 4.1.4（官方 Windows 插件 API 在 4.x 下可编译）。
+dependency_overrides:
+  win32: 4.1.4
+
+flutter:
+  uses-material-design: true

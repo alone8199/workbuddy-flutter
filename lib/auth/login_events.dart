@@ -59,6 +59,13 @@ class EffectOpenWebView extends LoginEffect {
   EffectOpenWebView(this.url, this.callbackPaths);
 }
 
+/// 用系统默认浏览器打开登录链接（替代原二维码扫码）。
+/// UI 收到后用注入的 UrlLauncher 打开 [url]。
+class EffectOpenBrowser extends LoginEffect {
+  final String url;
+  EffectOpenBrowser(this.url);
+}
+
 class EffectNavigateHome extends LoginEffect {
   final AuthTokens tokens;
   EffectNavigateHome(this.tokens);
@@ -84,7 +91,7 @@ class EffectBindPhoneRequired extends LoginEffect {
 class LoginUiState {
   final LoginPhase phase;
   final String? message;
-  final String? qrContent; // 二维码内容（qr_flutter 渲染）
+  final String? qrContent; // 登录链接（原二维码内容，现改为浏览器直开 URL）
   final String? codeOrTicket;
   final int countdown; // 发码倒计时（秒）
   final int pollAttempt; // 轮询次数

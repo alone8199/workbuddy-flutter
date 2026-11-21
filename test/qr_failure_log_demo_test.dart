@@ -69,6 +69,12 @@ void main() {
         'https://www.workbuddy.cn/login?platform=workbuddy&state=ST-123');
     expect(controller.state.codeOrTicket, 'ST-123');
     expect(controller.state.phase, LoginPhase.awaitingCallback);
+    // 拿到 authUrl 后应发出"用默认浏览器打开"副作用，而非渲染二维码。
+    final effects = controller.consumeEffects();
+    final opens = effects.whereType<EffectOpenBrowser>().toList();
+    expect(opens, isNotEmpty);
+    expect(opens.first.url,
+        'https://www.workbuddy.cn/login?platform=workbuddy&state=ST-123');
     controller.dispose();
   });
 

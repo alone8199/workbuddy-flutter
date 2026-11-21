@@ -1,5 +1,6 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/auth.dart';
 import '../models/phone_binding.dart';
@@ -14,14 +15,29 @@ import '../util/app_logger.dart';
 /// 打开外部网页的回调（便于测试注入，默认实现见 [defaultUrlLauncher]）。
 typedef UrlLauncher = Future<void> Function(String url);
 
+/// 用系统默认浏览器打开登录链接。
+/// 项目是 Windows-only：windows 用 rundll32（对含 & ? 的 URL 不做 shell 解析，最稳），
+/// 非 Windows（如 Linux 测试进程）只记日志、不真正拉起浏览器，避免测试误触。
 Future<void> defaultUrlLauncher(String url) async {
-  AppLogger.instance.i('LOGIN_UI', '请求打开外部网页: $url');
-  // 桌面 Windows：由 url_launcher / 系统浏览器接管；此处仅记录，避免误触发沙箱内的网络栈。
-  // 真实产物中由注入实现调用系统默认浏览器打开 [url]。
+  final log = AppLogger.instance;
+  log.i('LOGIN_UI', '打开默认浏览器: $url');
+  try {
+    if (Platform.isWindows) {
+      await Process.run('rundll32', <String>[
+        'url.dll,FileProtocolHandler',
+        url,
+      ]);
+      log.i('LOGIN_UI', '已调用系统默认浏览器打开链接');
+    } else {
+      log.i('LOGIN_UI', '非 Windows 环境，仅记录链接不拉起浏览器');
+    }
+  } catch (e, st) {
+    log.e('LOGIN_UI', '打开浏览器失败: $e', e, st);
+  }
 }
 
-/// 登录页：仅二维码扫码登录（其余登录方式按需求移除）。
-/// 扫码成功回调校验未绑定手机号时，展示"去网页绑定 → 重新扫码"引导。
+/// 登录页：仅"默认浏览器打开登录链接"一种方式（二维码入口已移除）。
+/// 拿到 token 后回调校验手机号绑定；未绑定则展示"去网页绑定 → 重新登录"引导。
 class LoginPage extends StatefulWidget {
   final AuthRepository repo;
   final PostLoginChecker postLoginChecker;
@@ -92,6 +108,9 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         widget.onSuccess(e.tokens);
       } else if (e is EffectBindPhoneRequired) {
         setState(() => _bindRequired = e);
+      } else if (e is EffectOpenBrowser) {
+        // 拿到登录链接，直接用系统默认浏览器打开。
+        unawaitedLaunch(e.url);
       } else if (e is EffectShowMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(e.message)),
@@ -99,6 +118,14 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
       } else if (e is EffectRefreshQr) {
         _controller.dispatch(LoginRetry());
       }
+    }
+  }
+
+  Future<void> unawaitedLaunch(String url) async {
+    try {
+      await widget.urlLauncher(url);
+    } catch (e) {
+      AppLogger.instance.e('LOGIN_UI', 'urlLauncher 抛错: $e');
     }
   }
 
@@ -151,7 +178,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         ),
         SizedBox(height: 6),
         Text(
-          '扫码登录，开启智能工作',
+          '浏览器登录，开启智能工作',
           style: TextStyle(fontSize: 13, color: _subtle),
         ),
       ],
@@ -186,7 +213,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         children: <Widget>[
           _buildBrand(),
           const SizedBox(height: 28),
-          _buildQrArea(st),
+          _buildBrowserArea(st),
           const SizedBox(height: 20),
           _buildStatusHint(st),
         ],
@@ -194,67 +221,75 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
     );
   }
 
-  Widget _buildQrArea(LoginUiState st) {
-    final qr = st.qrContent;
+  /// 浏览器登录引导区：大图标 + 说明 + 主按钮（重新打开浏览器）+ 登录链接。
+  Widget _buildBrowserArea(LoginUiState st) {
+    final url = st.qrContent;
     final failed = st.phase == LoginPhase.failed;
+    final loading = url == null && !failed;
 
-    Widget inner;
-    if (qr != null) {
-      inner = AbsorbPointer(
-        child: QrImageView(
-          data: qr,
-          version: QrVersions.auto,
-          size: 196,
-          backgroundColor: Colors.white,
-          eyeStyle: const QrEyeStyle(
-            eyeShape: QrEyeShape.square,
-            color: _ink,
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9FF),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE5E8EF), width: 1),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(
+            loading ? Icons.hourglass_empty : Icons.open_in_browser,
+            size: 44,
+            color: failed ? Colors.redAccent : _primary,
           ),
-          dataModuleStyle: const QrDataModuleStyle(
-            dataModuleShape: QrDataModuleShape.square,
-            color: _ink,
+          const SizedBox(height: 12),
+          Text(
+            failed
+                ? (st.message ?? '获取登录链接失败')
+                : loading
+                    ? '正在获取登录链接…'
+                    : '已为你打开默认浏览器',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: failed ? Colors.redAccent : _ink,
+            ),
           ),
-        ),
-      );
-    } else if (failed) {
-      inner = SizedBox(
-        height: 196,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const Icon(Icons.error_outline, size: 40, color: Colors.redAccent),
-              const SizedBox(height: 12),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Text(
-                  st.message ?? '二维码获取失败',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 13, color: Colors.redAccent),
-                ),
+          const SizedBox(height: 6),
+          const Text(
+            '请在网页中完成登录，登录成功后本窗口会自动继续。',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: _subtle, height: 1.4),
+          ),
+          if (url != null && !failed) ...<Widget>[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFFE5E8EF)),
               ),
-            ],
-          ),
-        ),
-      );
-    } else {
-      inner = const SizedBox(
-        height: 196,
-        child: Center(
-          child: CircularProgressIndicator(color: _primary),
-        ),
-      );
-    }
-
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFFE5E8EF), width: 1),
-        ),
-        child: inner,
+              child: Text(
+                url,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: _subtle),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: _outlineButton,
+                onPressed: () => unawaitedLaunch(url),
+                icon: const Icon(Icons.open_in_new, size: 16),
+                label: const Text('重新打开浏览器'),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -269,15 +304,15 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
     if (failed) {
       icon = Icons.refresh;
       iconColor = _primary;
-      text = '点击重新获取二维码';
+      text = '点击下方按钮重新获取登录链接';
     } else if (waiting) {
-      icon = Icons.qr_code_scanner;
+      icon = Icons.public;
       iconColor = _primary;
-      text = '请使用手机扫码并在浏览器中完成登录';
+      text = '正在等待网页登录完成…';
     } else {
       icon = Icons.hourglass_empty;
       iconColor = _subtle;
-      text = st.message ?? '正在准备二维码…';
+      text = st.message ?? '正在准备登录链接…';
     }
 
     return Column(
@@ -300,9 +335,9 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
           const SizedBox(height: 6),
           FadeTransition(
             opacity: _pulse,
-            child: const Text(
-              '等待扫码确认…',
-              style: TextStyle(fontSize: 12, color: _subtle),
+            child: Text(
+              st.message ?? '等待网页登录完成…',
+              style: const TextStyle(fontSize: 12, color: _subtle),
             ),
           ),
         ],
@@ -314,7 +349,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
               setState(() => _bindRequired = null);
               _controller.dispatch(LoginRetry());
             },
-            child: const Text('重新获取二维码'),
+            child: const Text('重新获取登录链接'),
           ),
           const SizedBox(height: 10),
           const Text(
@@ -327,7 +362,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
     );
   }
 
-  /// 未绑定手机号引导卡片：提示去网页绑定后重新扫码。
+  /// 未绑定手机号引导卡片：提示去网页绑定后重新登录。
   Widget _buildBindCard() {
     final info = _bindRequired!;
     return _card(
@@ -373,7 +408,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
           const SizedBox(height: 20),
           ElevatedButton(
             style: _primaryButton,
-            onPressed: () => widget.urlLauncher(info.bindUrl),
+            onPressed: () => unawaitedLaunch(info.bindUrl),
             child: const Text('前往网页绑定手机号'),
           ),
           const SizedBox(height: 10),
@@ -383,11 +418,11 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
               setState(() => _bindRequired = null);
               _controller.dispatch(LoginRetry());
             },
-            child: const Text('绑定后重新扫码'),
+            child: const Text('绑定后重新登录'),
           ),
           const SizedBox(height: 14),
           const Text(
-            '绑定完成后请回到这里重新扫码登录。',
+            '绑定完成后请回到这里重新登录。',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12, color: _subtle),
           ),

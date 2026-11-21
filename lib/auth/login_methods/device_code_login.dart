@@ -9,9 +9,11 @@ import '../login_controller.dart';
 import '../login_events.dart';
 import 'base_login.dart';
 
-/// 扫码确认 / 设备登录确认（方式 9，客户端侧纯请求）。
-/// 流程：生成 deviceCode → qr_flutter 本地渲染二维码 → 按间隔轮询 token →
-/// 处理待扫/已扫/已确认/已过期/失败，过期可刷新。
+/// 浏览器直开登录 / 设备码轮询（客户端侧纯请求）。
+/// 流程：auth/state 拿 authUrl+state → 用系统默认浏览器打开 authUrl → 按间隔轮询 token
+/// → 处理待登录/已确认/已过期/失败，过期可刷新；拿到 token 后跑后置绑定校验。
+/// 说明：不用二维码渲染、不接收任何客户端回调（无自定义 scheme / 本地回调服务），
+/// "登录完成"完全靠轮询服务端 state 感知，因此不存在唤起原版应用的问题。
 /// TODO(dynamic-capture): expiresIn 单位（秒/毫秒）未定，这里按秒处理（报告基线）。
 class DeviceCodeLoginController extends LoginController {
   final AuthRepository repo;
@@ -119,9 +121,12 @@ class DeviceCodeLoginController extends LoginController {
       loading: false,
       qrContent: qr,
       codeOrTicket: deviceCode,
-      message: '请用手机扫码并在浏览器完成登录',
+      message: '已打开浏览器，请在网页完成登录',
       pollAttempt: 0,
     ));
+    // 不再渲染二维码：拿到 authUrl 直接让 UI 用系统默认浏览器打开。
+    // 轮询仍用 state(deviceCode) 感知登录完成，全程无需任何客户端回调/scheme 唤起。
+    emit(EffectOpenBrowser(qr));
     _startPolling();
   }
 
@@ -154,7 +159,7 @@ class DeviceCodeLoginController extends LoginController {
       log.d('QR_LOGIN', '轮询第 $attempt 次：待确认（token=null，通常=authorization_pending）');
       setState(state.copyWith(
         pollAttempt: attempt,
-        message: '等待扫码确认…（第 $attempt 次轮询）',
+        message: '等待网页登录完成…（第 $attempt 次轮询）',
       ));
     } catch (e, st) {
       // 轮询网络抖动不终止，继续下一 tick，但完整记录异常。
